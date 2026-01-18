@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <title>Socket.IO chat</title>
+  <style>
+      body { margin: 0; padding-bottom: 3rem; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+
+      #form { background: rgba(0, 0, 0, 0.15); padding: 0.25rem; position: fixed; bottom: 0; left: 0; right: 0; display: flex; height: 3rem; box-sizing: border-box; backdrop-filter: blur(10px); }
+      #input { border: none; padding: 0.5rem 1rem; flex-grow: 1; border-radius: 1rem; margin: 0.25rem; resize: none; line-height: 1.2; }
+      #input:focus { outline: none; }
+      #form > button { background: #333; border: none; padding: 0 1rem; margin: 0.25rem; border-radius: 3px; outline: none; color: #fff; }
+
+      #messages { list-style-type: none; margin: 0; padding: 0; }
+      #messages > li { padding: 0.5rem 1rem; white-space: pre-wrap; word-break: break-word; }
+      #messages > li:nth-child(odd) { background: #efefef; }
+
+      .username { font-weight: 700; }
+      .pgp-block {
+        margin-top: 0.25rem;
+        padding: 0.75rem;
+        border-radius: 8px;
+        background: rgba(0, 0, 0, 0.06);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        white-space: pre;
+        overflow-x: auto;
+      }
+      .msg-actions { margin-top: 0.35rem; display: flex; gap: 0.5rem; flex-wrap: wrap; }
+      .msg-actions button {
+        border: 1px solid rgba(0, 0, 0, 0.2);
+        background: #fff;
+        padding: 0.25rem 0.5rem;
+        border-radius: 6px;
+        cursor: pointer;
+      }
+  </style>
+</head>
+<body>
+  <ul id="messages"></ul>
+  <form id="form" action="">
+    <textarea id="input" autocomplete="off" rows="1"></textarea><button>Send</button>
+  </form>
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    let counter = 0;
+
+    function getOrCreateUsername() {
+      const key = 'chat-example.username';
+      const existing = localStorage.getItem(key);
+      if (existing) return existing;
+
+      let suffix;
+      if (window.crypto?.getRandomValues) {
+        const arr = new Uint32Array(1);
+        window.crypto.getRandomValues(arr);
+        suffix = String(100 + (arr[0] % 900));
+      } else {
+        suffix = String(Math.floor(100 + Math.random() * 900));
+      }
+
+      const username = `Anonimo${suffix}`;
+      localStorage.setItem(key, username);
+      return username;
+    }
+
+    const username = getOrCreateUsername();
+
+    const socket = io({
+      auth: {
+        serverOffset: 0,
+        username,
+      },
+      ackTimeout: 10000,
+      retries: 3,
+    });
+
+    const form = document.getElementById('form');
+    const input = document.getElementById('input');
+    const messages = document.getElementById('messages');
+
+    function hashToHue(value) {
+      const str = String(value ?? '');
+      let hash = 0;
+      for (let i = 0; i < str.length; i++) {
+        hash = (hash * 31 + str.charCodeAt(i)) >>> 0;
+      }
+      return hash % 360;
+    }
+
+    function detectPgpArmoredBlocks(text) {
+      const input = String(text ?? '');
+      const regex = /-----BEGIN PGP (PUBLIC KEY BLOCK|MESSAGE)-----[\s\S]*?-----END PGP \1-----/g;
+      const blocks = [];
+      let lastIndex = 0;
+      let match;
+      while ((match = regex.exec(input)) !== null) {
+        if (match.index > lastIndex) {
+          blocks.push({ type: 'text', value: input.slice(lastIndex, match.index) });
+        }
+
+        const kind = match[1] === 'PUBLIC KEY BLOCK' ? 'pgp-public-key' : 'pgp-message';
+        blocks.push({ type: kind, value: match[0] });
+        lastIndex = match.index + match[0].length;
+      }
+      if (lastIndex < input.length) {
+        blocks.push({ type: 'text', value: input.slice(lastIndex) });
+      }
+      return blocks.length ? blocks : [{ type: 'text', value: input }];
+    }
+
+    async function copyToClipboard(text) {
+      const value = String(text ?? '');
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+        return;
+      }
+      const temp = document.createElement('textarea');
+      temp.value = value;
+      temp.style.position = 'fixed';
+      temp.style.left = '-9999px';
+      document.body.appendChild(temp);
+      temp.select();
+      document.execCommand('copy');
+      document.body.removeChild(temp);
+    }
+
+    function downloadTextFile(filename, text) {
+      const blob = new Blob([String(text ?? '')], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        form.requestSubmit();
+      }
+    });
+
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      if (input.value) {
+        const clientOffset = `${socket.id}-${counter++}`;
+        socket.emit('chat message', input.value, clientOffset);
+        input.value = '';
+      }
+    });
+
+    socket.on('chat message', (msg, serverOffset) => {
+      const item = document.createElement('li');
+
+      const payload = (typeof msg === 'string') ? { content: msg, username: 'Anonimo' } : (msg || {});
+      const name = payload.username || 'Anonimo';
+      const text = payload.content || '';
+
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'username';
+      nameSpan.style.color = `hsl(${hashToHue(name)}, 70%, 35%)`;
+      nameSpan.textContent = `${name}: `;
+
+      item.appendChild(nameSpan);
+
+      const segments = detectPgpArmoredBlocks(text);
+      for (const seg of segments) {
+        if (seg.type === 'text') {
+          const textSpan = document.createElement('span');
+          textSpan.textContent = seg.value;
+          item.appendChild(textSpan);
+        } else if (seg.type === 'pgp-public-key' || seg.type === 'pgp-message') {
+          const isPublicKey = seg.type === 'pgp-public-key';
+          const label = document.createElement('div');
+          label.style.marginTop = '0.25rem';
+          label.style.fontSize = '0.9rem';
+          label.style.opacity = '0.8';
+          label.textContent = isPublicKey ? 'PGP Public Key' : 'PGP Message';
+
+          const pre = document.createElement('pre');
+          pre.className = 'pgp-block';
+          pre.textContent = seg.value;
+
+          const actions = document.createElement('div');
+          actions.className = 'msg-actions';
+
+          const copyBtn = document.createElement('button');
+          copyBtn.type = 'button';
+          copyBtn.textContent = 'Copiar';
+          copyBtn.addEventListener('click', async () => {
+            try {
+              await copyToClipboard(seg.value);
+              copyBtn.textContent = 'Copiado';
+              setTimeout(() => (copyBtn.textContent = 'Copiar'), 1200);
+            } catch {
+              copyBtn.textContent = 'Error';
+              setTimeout(() => (copyBtn.textContent = 'Copiar'), 1200);
+            }
+          });
+
+          const saveBtn = document.createElement('button');
+          saveBtn.type = 'button';
+          saveBtn.textContent = 'Guardar .asc';
+          saveBtn.addEventListener('click', () => {
+            downloadTextFile(isPublicKey ? `${name}-publickey.asc` : `${name}-message.asc`, seg.value);
+          });
+
+          actions.appendChild(copyBtn);
+          actions.appendChild(saveBtn);
+
+          item.appendChild(label);
+          item.appendChild(pre);
+          item.appendChild(actions);
+        }
+      }
+
+      messages.appendChild(item);
+      window.scrollTo(0, document.body.scrollHeight);
+      socket.auth.serverOffset = serverOffset;
+    });
+  </script>
+</body>
+</html>
