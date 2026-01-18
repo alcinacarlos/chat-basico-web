@@ -88,7 +88,7 @@ io.on('connection', async (socket) => {
   }
 });
 
-const port = Number.parseInt(process.env.PORT ?? '', 10) || 3000;
+const port = Number.parseInt(process.env.PORT ?? '', 10) || 80;
 
 server.listen(port, () => {
   console.log(`server running at http://localhost:${port}`);
